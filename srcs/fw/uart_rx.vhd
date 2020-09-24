@@ -13,7 +13,12 @@ ENTITY uart_rx IS
    PORT (
       CLK         : IN  STD_LOGIC;
       RST         : IN  STD_LOGIC;
-      CLKIN_RATIO : IN  STD_LOGIC_VECTOR (7 DOWNTO 0);
+      CLKIN_RATIO : IN  STD_LOGIC_VECTOR (7 DOWNTO 0); -- ratio of bit length
+                                                       -- to clkin length
+      CLKIN_DELAY : in  STD_LOGIC_VECTOR (3 downto 0); -- length of delay
+                                                       -- between registering
+                                                       -- start bit edge and
+                                                       -- sampling (clk cycles) 
       -- UART RX
       RX          : IN  STD_LOGIC;
       -- received data
@@ -36,9 +41,22 @@ ARCHITECTURE uart_rx_arch OF uart_rx IS
   SIGNAL state : state_type := IDLE;
   
   SIGNAL RXfiltered  : STD_LOGIC;
-  SIGNAL RXfilterSRG : STD_LOGIC_VECTOR (2 DOWNTO 0);
+  SIGNAL RXfilterSRG : STD_LOGIC_VECTOR (4 DOWNTO 0);
   
   SIGNAL srg : STD_LOGIC_VECTOR (DATA_WIDTH+1 DOWNTO 0);
+
+  function COUNT_BITS (X : STD_LOGIC_VECTOR) return INTEGER is
+  begin
+    if X'length = 1 then
+      if X = '1' then
+        return 1;
+      else
+        return 0;
+      end if;
+    else
+      return COUNT_BITS(X (X'length-1 downto 1)) + COUNT_BITS(0);
+    end if;
+  end COUNT_BITS;
 
 BEGIN  -- ARCHITECTURE uart_rx_arch
 
@@ -48,13 +66,12 @@ BEGIN  -- ARCHITECTURE uart_rx_arch
       IF RST = '1' THEN  -- asynchronous reset (active high)
         RXfiltered <= '1';
       ELSIF CLK'EVENT AND CLK = '1' THEN  -- rising clock edge
-         RXfilterSRG <= RXfilterSRG (1 DOWNTO 0) & RX;
-         IF RXfilterSRG = "111" THEN
+        RXfilterSRG <= RXfilterSRG (1 DOWNTO 0) & RX;
+        IF COUNT_BITS(RXfilterSRG) >= 3 THEN
             RXfiltered <= '1';
-         END IF;
-         IF RXfilterSRG = "000" THEN
+        ELSE
             RXfiltered <= '0';
-         END IF;
+        END IF;
       END IF;
    END PROCESS RX_FILTER;
 
@@ -75,8 +92,23 @@ BEGIN  -- ARCHITECTURE uart_rx_arch
                cnt_bit_length <= (bit_length / 2) - 2;
                cnt_bits       <= 0;
                IF RXfiltered = '0' THEN
-                  state <= WT;
+                 state <= DELAY;
+                 cnt_delay <= to_integer(unsigned(CLKIN_DELAY));
                END IF;
+
+            when DELAY =>
+              busy <= '1';
+              cnt_delay <= cnt_delay - 1;
+              IF cnt_delay = 0 THEN
+                IF RXfiltered = '0' THEN
+                  state <= WT;
+                  cnt_bit_length <= bit_length - 2;
+                ELSE
+                  state <= IDLE;
+                END IF;
+              ELSE
+                state <= DELAY;
+              END IF;     
                
             WHEN WT =>
                busy <= '1';
